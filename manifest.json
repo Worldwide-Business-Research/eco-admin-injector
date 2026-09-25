@@ -3,7 +3,7 @@
   "name": "ECO Admin Block Injector",
   "version": "1.0",
   "description": "Split a full HTML file into page_content blocks in ECO Admin",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["https://ecoadmin.wbresearch.com/*"],
   "action": {
     "default_popup": "popup.html",

@@ -41,3 +41,4 @@ Paste a full HTML file and automatically split it into separate page_content blo
 - Added an **Enable existing** button to bulk re-enable disabled blocks (mirrors the existing Disable button).
 - Added an **Activity log** panel — every add/disable/enable/delete action is recorded locally (timestamp, section, block name), with a **Restore** link on delete entries to re-inject the saved HTML.
 - Replaced the plain blue toolbar icon with a syringe design.
+- Fixed the Activity log not actually saving — the extension was missing the `storage` permission it needs to write to local storage, so log entries were silently lost. Also made log writes fail-safe so a logging error can no longer abort a disable/enable/delete run partway through.

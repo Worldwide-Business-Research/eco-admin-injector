@@ -528,18 +528,26 @@ const LOG_KEY = 'ecoActionLog';
 const LOG_MAX = 150;
 
 async function logAction(entry) {
-  const full = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ts: new Date().toISOString(), ...entry };
-  const stored = await chrome.storage.local.get(LOG_KEY);
-  const log = stored[LOG_KEY] || [];
-  log.unshift(full);
-  if (log.length > LOG_MAX) log.length = LOG_MAX;
-  await chrome.storage.local.set({ [LOG_KEY]: log });
-  renderLog(log);
+  try {
+    const full = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ts: new Date().toISOString(), ...entry };
+    const stored = await chrome.storage.local.get(LOG_KEY);
+    const log = stored[LOG_KEY] || [];
+    log.unshift(full);
+    if (log.length > LOG_MAX) log.length = LOG_MAX;
+    await chrome.storage.local.set({ [LOG_KEY]: log });
+    renderLog(log);
+  } catch (err) {
+    console.error('Activity log write failed:', err);
+  }
 }
 
 async function loadLog() {
-  const stored = await chrome.storage.local.get(LOG_KEY);
-  renderLog(stored[LOG_KEY] || []);
+  try {
+    const stored = await chrome.storage.local.get(LOG_KEY);
+    renderLog(stored[LOG_KEY] || []);
+  } catch (err) {
+    console.error('Activity log load failed:', err);
+  }
 }
 
 function formatLogTime(iso) {

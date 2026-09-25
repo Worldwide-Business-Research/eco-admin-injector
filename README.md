@@ -32,3 +32,12 @@ Paste a full HTML file and automatically split it into separate page_content blo
 - Auto-naming pulls the first `h1/h2/h3` heading inside each block
 - You can stop mid-run with the **Stop** button
 - If a block errors, you'll be asked whether to continue or abort
+
+---
+
+## Changelog
+
+### 2026-09-25
+- Added an **Enable existing** button to bulk re-enable disabled blocks (mirrors the existing Disable button).
+- Added an **Activity log** panel — every add/disable/enable/delete action is recorded locally (timestamp, section, block name), with a **Restore** link on delete entries to re-inject the saved HTML.
+- Replaced the plain blue toolbar icon with a syringe design.

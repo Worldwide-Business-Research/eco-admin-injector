@@ -28,6 +28,7 @@ function updateDisableProgress(done, total) {
   disableProgressBar.style.width = ((done / total) * 100) + '%';
 }
 
+const enableBtn = document.getElementById('enableBtn');
 const deleteBtn = document.getElementById('deleteBtn');
 const exportBtn = document.getElementById('exportBtn');
 
@@ -42,6 +43,7 @@ disableBtn.addEventListener('click', async () => {
   disableRunning = true;
   disableStopRequested = false;
   disableBtn.disabled = true;
+  enableBtn.disabled = true;
   disableStopBtn.style.display = 'inline-block';
   disableProgressWrap.style.display = 'none';
   disableProgressBar.style.width = '0%';
@@ -61,6 +63,7 @@ disableBtn.addEventListener('click', async () => {
     setDisableStatus('No existing blocks found in selected sections.', 'warning');
     disableRunning = false;
     disableBtn.disabled = false;
+    enableBtn.disabled = false;
     disableStopBtn.style.display = 'none';
     return;
   }
@@ -81,7 +84,7 @@ disableBtn.addEventListener('click', async () => {
         args: [section, i]
       });
       const outcome = res[0]?.result;
-      if (outcome?.success) { done++; } else { errors++; }
+      if (outcome?.success) { done++; await logAction({ action: 'disable', section, name: outcome.name }); } else { errors++; }
       updateDisableProgress(done + errors, total);
       await new Promise(r => setTimeout(r, 600));
     }
@@ -89,6 +92,7 @@ disableBtn.addEventListener('click', async () => {
 
   disableRunning = false;
   disableBtn.disabled = false;
+  enableBtn.disabled = false;
   disableStopBtn.style.display = 'none';
   disableStopBtn.disabled = false;
   disableStopBtn.textContent = 'Stop';
@@ -99,6 +103,77 @@ disableBtn.addEventListener('click', async () => {
     setDisableStatus(`Done — ${done} block${done !== 1 ? 's' : ''} disabled.`, 'success');
   } else {
     setDisableStatus(`Done — ${done} disabled, ${errors} failed.`, 'warning');
+  }
+});
+
+enableBtn.addEventListener('click', async () => {
+  if (disableRunning) return;
+  const checked = [...document.querySelectorAll('.section-check:checked')].map(c => c.value);
+  if (!checked.length) { setDisableStatus('Select at least one section.', 'warning'); return; }
+
+  disableRunning = true;
+  disableStopRequested = false;
+  disableBtn.disabled = true;
+  enableBtn.disabled = true;
+  disableStopBtn.style.display = 'inline-block';
+  disableProgressWrap.style.display = 'none';
+  disableProgressBar.style.width = '0%';
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  const result = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: 'MAIN',
+    func: getBlockCountsForSections,
+    args: [checked]
+  });
+  const counts = result[0]?.result || {};
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+
+  if (total === 0) {
+    setDisableStatus('No existing blocks found in selected sections.', 'warning');
+    disableRunning = false;
+    disableBtn.disabled = false;
+    enableBtn.disabled = false;
+    disableStopBtn.style.display = 'none';
+    return;
+  }
+
+  setDisableStatus(`Enabling ${total} block${total > 1 ? 's' : ''} across ${checked.length} section${checked.length > 1 ? 's' : ''}...`, 'info');
+
+  let done = 0, errors = 0;
+
+  for (const section of checked) {
+    if (disableStopRequested) break;
+    const count = counts[section] || 0;
+    for (let i = 0; i < count; i++) {
+      if (disableStopRequested) break;
+      const res = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        func: enableBlockAtIndex,
+        args: [section, i]
+      });
+      const outcome = res[0]?.result;
+      if (outcome?.success) { done++; await logAction({ action: 'enable', section, name: outcome.name }); } else { errors++; }
+      updateDisableProgress(done + errors, total);
+      await new Promise(r => setTimeout(r, 600));
+    }
+  }
+
+  disableRunning = false;
+  disableBtn.disabled = false;
+  enableBtn.disabled = false;
+  disableStopBtn.style.display = 'none';
+  disableStopBtn.disabled = false;
+  disableStopBtn.textContent = 'Stop';
+
+  if (disableStopRequested) {
+    setDisableStatus(`Stopped. ${done} enabled.`, 'warning');
+  } else if (errors === 0) {
+    setDisableStatus(`Done — ${done} block${done !== 1 ? 's' : ''} enabled.`, 'success');
+  } else {
+    setDisableStatus(`Done — ${done} enabled, ${errors} failed.`, 'warning');
   }
 });
 
@@ -119,6 +194,7 @@ deleteBtn.addEventListener('click', async () => {
   disableStopRequested = false;
   deleteBtn.disabled = true;
   disableBtn.disabled = true;
+  enableBtn.disabled = true;
   disableStopBtn.style.display = 'inline-block';
   disableProgressWrap.style.display = 'none';
   disableProgressBar.style.width = '0%';
@@ -137,6 +213,7 @@ deleteBtn.addEventListener('click', async () => {
     disableRunning = false;
     deleteBtn.disabled = false;
     disableBtn.disabled = false;
+    enableBtn.disabled = false;
     disableStopBtn.style.display = 'none';
     return;
   }
@@ -154,7 +231,7 @@ deleteBtn.addEventListener('click', async () => {
         func: deleteFirstLiveBlock, args: [section]
       });
       const outcome = res[0]?.result;
-      if (outcome?.success) { done++; } else { errors++; }
+      if (outcome?.success) { done++; await logAction({ action: 'delete', section, name: outcome.name, html: outcome.html }); } else { errors++; }
       updateDisableProgress(done + errors, total);
       await new Promise(r => setTimeout(r, 800));
     }
@@ -163,6 +240,7 @@ deleteBtn.addEventListener('click', async () => {
   disableRunning = false;
   deleteBtn.disabled = false;
   disableBtn.disabled = false;
+  enableBtn.disabled = false;
   disableStopBtn.style.display = 'none';
   disableStopBtn.disabled = false;
   disableStopBtn.textContent = 'Stop';
@@ -298,11 +376,14 @@ async function deleteFirstLiveBlock(sectionName) {
     const btn = deleteBtns[firstLiveIdx];
     if (!btn) return { success: false, error: `Delete button not found at index ${firstLiveIdx}` };
 
+    const name = views[firstLiveIdx].name || '';
+    const html = views[firstLiveIdx].html || '';
+
     window.confirm = () => true;
     btn.click();
     await sleep(1000);
     window.confirm = origConfirm;
-    return { success: true };
+    return { success: true, name, html };
   } catch (err) {
     window.confirm = origConfirm;
     return { success: false, error: err.message };
@@ -350,6 +431,7 @@ async function disableBlockAtIndex(sectionName, index) {
     const vm = modal.__vue__?.$parent?.$parent;
     if (!vm?.$data?.view_to_edit_clone) return { success: false, error: 'Could not access Vue edit component' };
 
+    const name = vm.$data.view_to_edit?.name || '';
     vm.$data.view_to_edit.disabled = 1;
     vm.$data.view_to_edit_clone.disabled = 1;
     await sleep(300);
@@ -362,7 +444,52 @@ async function disableBlockAtIndex(sectionName, index) {
     for (let t = 0; t < 35; t++) { await sleep(150); if (!getModal()) { closed = true; break; } }
     if (!closed) return { success: false, error: 'Modal did not close after save' };
 
-    return { success: true };
+    return { success: true, name };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+async function enableBlockAtIndex(sectionName, index) {
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function getModal() { return document.querySelector('.modal.in, .modal[style*="display: block"], .modal[style*="display:block"]'); }
+
+  try {
+    const lis = [...document.querySelectorAll('ul.list-group > li.list-unstyled')];
+    const li = lis.find(el => {
+      const h = el.querySelector('div.panel-heading');
+      if (!h) return false;
+      const text = [...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('').toLowerCase();
+      return text === sectionName.toLowerCase();
+    });
+    if (!li) return { success: false, error: `Section "${sectionName}" not found` };
+
+    const editBtns = [...li.querySelectorAll('a.btn-warning')];
+    const btn = editBtns[index];
+    if (!btn) return { success: false, error: `No edit button at index ${index}` };
+
+    btn.click();
+    let modal = null;
+    for (let t = 0; t < 25; t++) { await sleep(120); modal = getModal(); if (modal) break; }
+    if (!modal) return { success: false, error: 'Modal did not open' };
+
+    const vm = modal.__vue__?.$parent?.$parent;
+    if (!vm?.$data?.view_to_edit_clone) return { success: false, error: 'Could not access Vue edit component' };
+
+    const name = vm.$data.view_to_edit?.name || '';
+    vm.$data.view_to_edit.disabled = 0;
+    vm.$data.view_to_edit_clone.disabled = 0;
+    await sleep(300);
+
+    const saveBtn = modal.querySelector('button.btn-primary:not(.note-btn):not(.note-color-btn)');
+    if (!saveBtn) return { success: false, error: 'Save button not found' };
+    saveBtn.click();
+
+    let closed = false;
+    for (let t = 0; t < 35; t++) { await sleep(150); if (!getModal()) { closed = true; break; } }
+    if (!closed) return { success: false, error: 'Modal did not close after save' };
+
+    return { success: true, name };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -382,6 +509,9 @@ const progressBar = document.getElementById('progressBar');
 const mainContent = document.getElementById('mainContent');
 const notCms = document.getElementById('notCms');
 const pageStatus = document.getElementById('pageStatus');
+const logItems = document.getElementById('logItems');
+const logEmpty = document.getElementById('logEmpty');
+const logClearBtn = document.getElementById('logClearBtn');
 
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const url = tabs[0]?.url || '';
@@ -393,6 +523,84 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     pageStatus.textContent = 'wrong page';
   }
 });
+
+const LOG_KEY = 'ecoActionLog';
+const LOG_MAX = 150;
+
+async function logAction(entry) {
+  const full = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ts: new Date().toISOString(), ...entry };
+  const stored = await chrome.storage.local.get(LOG_KEY);
+  const log = stored[LOG_KEY] || [];
+  log.unshift(full);
+  if (log.length > LOG_MAX) log.length = LOG_MAX;
+  await chrome.storage.local.set({ [LOG_KEY]: log });
+  renderLog(log);
+}
+
+async function loadLog() {
+  const stored = await chrome.storage.local.get(LOG_KEY);
+  renderLog(stored[LOG_KEY] || []);
+}
+
+function formatLogTime(iso) {
+  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderLog(log) {
+  if (!log.length) {
+    logItems.innerHTML = '';
+    logEmpty.style.display = 'block';
+    return;
+  }
+  logEmpty.style.display = 'none';
+  logItems.innerHTML = log.map(entry => `
+    <div class="log-item log-type-${entry.action}">
+      <div class="log-main">
+        <span class="log-badge">${entry.action}</span>
+        <span class="log-name">${escapeHtml(entry.name || '(unnamed)')}</span>
+        <span class="log-section">${entry.section || ''}</span>
+      </div>
+      <div class="log-meta">
+        <span>${formatLogTime(entry.ts)}</span>
+        ${entry.action === 'delete' && entry.html ? `<span class="log-restore-btn" data-id="${entry.id}">Restore</span>` : ''}
+      </div>
+    </div>
+  `).join('');
+  logItems.querySelectorAll('.log-restore-btn').forEach(btn => {
+    btn.addEventListener('click', () => restoreLogEntry(btn.dataset.id));
+  });
+}
+
+async function restoreLogEntry(id) {
+  const stored = await chrome.storage.local.get(LOG_KEY);
+  const log = stored[LOG_KEY] || [];
+  const entry = log.find(e => e.id === id);
+  if (!entry || !entry.html) return;
+  if (!confirm(`Re-add "${entry.name}" to ${entry.section}? This creates a new block with the saved HTML.`)) return;
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const result = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: 'MAIN',
+    func: injectBlock,
+    args: [entry.name, entry.html, entry.section]
+  });
+  const outcome = result[0]?.result;
+  if (outcome?.success) {
+    setDisableStatus(`Restored "${entry.name}" to ${entry.section}.`, 'success');
+    await logAction({ action: 'restore', section: entry.section, name: entry.name, html: entry.html });
+  } else {
+    setDisableStatus(`Restore failed: ${outcome?.error || 'unknown error'}`, 'error');
+  }
+}
+
+logClearBtn.addEventListener('click', async () => {
+  if (!confirm('Clear the activity log? This cannot be undone.')) return;
+  await chrome.storage.local.set({ [LOG_KEY]: [] });
+  renderLog([]);
+});
+
+loadLog();
 
 function slugify(text) {
   return text
@@ -553,6 +761,7 @@ runBtn.addEventListener('click', async () => {
       if (outcome?.success) {
         setBlockStatus(i, 'done');
         doneCount++;
+        await logAction({ action: 'add', section: block.section, name: block.name, html: block.html });
       } else {
         setBlockStatus(i, 'error');
         errorCount++;

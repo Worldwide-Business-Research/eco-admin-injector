@@ -213,10 +213,28 @@
   }
   .section-check-item input[type="checkbox"] { cursor: pointer; accent-color: #1a6e9f; }
 
-  .disable-row { display: flex; gap: 8px; }
+  .disable-row { display: flex; gap: 8px; flex-wrap: wrap; }
   #disableBtn { flex: 1; }
 
   .progress-bar-wrap.disable { margin-top: 6px; }
+
+  .log-clear { font-size: 11px; color: #1a6e9f; cursor: pointer; text-transform: none; letter-spacing: normal; font-weight: 500; }
+  .log-clear:hover { text-decoration: underline; }
+  .log-empty { font-size: 11px; color: #999; padding: 6px 0; }
+  .log-items { max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+  .log-item { background: #fff; border: 1px solid #e8e8e8; border-radius: 6px; padding: 6px 8px; font-size: 11px; }
+  .log-main { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+  .log-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 10px; background: #e8e8e8; color: #555; flex-shrink: 0; }
+  .log-item.log-type-add .log-badge { background: #dff3e6; color: #1e8449; }
+  .log-item.log-type-delete .log-badge { background: #fdeceb; color: #c0392b; }
+  .log-item.log-type-disable .log-badge { background: #fef6e0; color: #b8860b; }
+  .log-item.log-type-enable .log-badge { background: #eaf3fb; color: #1a6e9f; }
+  .log-item.log-type-restore .log-badge { background: #eee5fb; color: #6c3fc5; }
+  .log-name { font-weight: 600; color: #1a1a1a; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-section { font-size: 10px; color: #999; flex-shrink: 0; }
+  .log-meta { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #999; }
+  .log-restore-btn { color: #1a6e9f; cursor: pointer; font-weight: 600; }
+  .log-restore-btn:hover { text-decoration: underline; }
 
   .not-on-cms {
     padding: 24px 20px;
@@ -242,6 +260,7 @@
     <div class="section-checks" id="sectionChecks"></div>
     <div class="disable-row">
       <button id="disableBtn" class="primary">Disable existing</button>
+      <button id="enableBtn">Enable existing</button>
       <button id="deleteBtn" class="danger">Delete live</button>
       <button id="exportBtn">Export HTML</button>
       <button id="disableStopBtn" class="danger" style="display:none">Stop</button>
@@ -250,6 +269,17 @@
       <div class="progress-bar" id="disableProgressBar"></div>
     </div>
     <div class="status-bar" id="disableStatusBar"></div>
+  </div>
+
+  <hr class="divider">
+
+  <div id="logPanel">
+    <div class="disable-panel-header">
+      <label>Activity log</label>
+      <span class="log-clear" id="logClearBtn">Clear</span>
+    </div>
+    <div id="logEmpty" class="log-empty">No actions yet.</div>
+    <div id="logItems" class="log-items"></div>
   </div>
 
   <hr class="divider">

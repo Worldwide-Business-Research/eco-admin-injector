@@ -1010,6 +1010,20 @@ async function loadImageBlocks() {
 
 function getSectionBlocks(sectionName) {
   const target = sectionName.toLowerCase();
+  const toBlock = v => ({ name: v.name || v.file || '', html: v.html || '', disabled: !!Number(v.disabled) });
+
+  const regionsEl = document.querySelector('.eco-regions');
+  if (regionsEl) {
+    let vm = regionsEl.__vue__;
+    for (let d = 0; d < 12 && vm && !Array.isArray(vm.$data?.regions); d++) vm = vm.$parent;
+    const regions = vm?.$data?.regions;
+    if (!Array.isArray(regions)) return { error: 'Found the Regions card but couldn\'t read its data.' };
+    const region = regions.find(r => String(r.path || '').toLowerCase() === target);
+    if (!region) return { error: `This page has no "${sectionName}" region. Regions: ${regions.map(r => r.path).join(', ')}` };
+    return { views: (region.views || []).map(toBlock) };
+  }
+  if (document.body.classList.contains('eco-v2')) return { error: 'Open the page\'s Regions tab, wait for it to load, then click Refresh.' };
+
   const headings = [...document.querySelectorAll('div.panel-heading')];
   const ownText = h => [...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('').toLowerCase();
   const heading = headings.find(h => ownText(h) === target) || headings.find(h => h.textContent.trim().toLowerCase().startsWith(target));
@@ -1037,7 +1051,7 @@ function getSectionBlocks(sectionName) {
     }
   }
   if (!views) return { error: `Found "${sectionName}" but couldn't read its block list.` };
-  return { views: views.map(v => ({ name: v.name || '', html: v.html || '', disabled: !!v.disabled })) };
+  return { views: views.map(toBlock) };
 }
 
 async function downloadBlockImages() {

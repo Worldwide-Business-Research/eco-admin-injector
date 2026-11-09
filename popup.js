@@ -1109,14 +1109,11 @@ async function downloadBlockImages() {
 
     if (outcome.state === 'complete') {
       setImgStatus(`Saved ${outcome.path || filename} — ${counts}.`, failed.length ? 'warning' : 'success');
+    } else if (outcome.state === 'unknown') {
+      setImgStatus(`Sent ${filename} to Chrome's downloads — ${counts}.`, failed.length ? 'warning' : 'success');
     } else {
-      const pending = outcome.state === 'pending' || outcome.state === 'in_progress';
       const detail = [outcome.state, outcome.error, outcome.danger && outcome.danger !== 'safe' ? `danger: ${outcome.danger}` : ''].filter(Boolean).join(', ');
-      const msg = pending
-        ? `Zipped ${counts}. Chrome hasn't finished saving it after 15s (${detail}). Check chrome://downloads, or `
-        : `Zipped ${counts}, but the download failed (${detail || 'no reason given'}). `;
-      setImgStatus(msg, pending ? 'warning' : 'error');
-      addSaveLink(blob, filename);
+      setImgStatus(`Zipped ${counts}, but Chrome didn't save it (${detail}). Open chrome://downloads to see why.`, 'error');
     }
   } catch (err) {
     setImgStatus(`ZIP failed: ${err.message}`, 'error');
@@ -1237,37 +1234,74 @@ async function mapWithLimit(items, limit, fn) {
 }
 
 async function downloadBlob(blob, filename) {
-  if (!chrome.downloads) return { state: 'error', error: 'the extension has no downloads permission yet. Reload it in chrome://extensions' };
-  const url = URL.createObjectURL(blob);
-  setTimeout(() => URL.revokeObjectURL(url), 120000);
-  const id = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'uniquify' });
-  if (id === undefined) return { state: 'error', error: chrome.runtime.lastError?.message || 'Chrome refused the download' };
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const base64 = await blobToBase64(blob);
+  const watch = watchPageDownload(new URL(tab.url).origin, 20000);
+  const result = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: 'MAIN',
+    func: saveBase64File,
+    args: [base64, filename, 'application/zip']
+  });
+  if (!result[0]?.result) { watch.cancel(); return { state: 'error', error: 'the ECO Admin tab could not start the download' }; }
+  return watch.promise;
+}
 
-  return new Promise(resolve => {
-    const finish = async state => {
-      chrome.downloads.onChanged.removeListener(listener);
-      clearTimeout(timer);
-      const [item] = await chrome.downloads.search({ id });
-      resolve({ state: state || item?.state || 'pending', path: item?.filename || '', error: item?.error || '', danger: item?.danger || '' });
-    };
-    const listener = delta => {
-      if (delta.id !== id || !delta.state) return;
-      if (delta.state.current === 'complete' || delta.state.current === 'interrupted') finish(delta.state.current);
-    };
-    const timer = setTimeout(() => finish(), 15000);
-    chrome.downloads.onChanged.addListener(listener);
-    chrome.downloads.search({ id }).then(([item]) => {
-      if (item && item.state !== 'in_progress') finish(item.state);
-    });
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
   });
 }
 
-function addSaveLink(blob, filename) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.textContent = 'Save ZIP';
-  a.style.fontWeight = '600';
-  a.style.color = 'inherit';
-  imgStatusBar.appendChild(a);
+function watchPageDownload(origin, ms) {
+  let cancel = () => {};
+  const promise = new Promise(resolve => {
+    if (!chrome.downloads) { resolve({ state: 'unknown' }); return; }
+    let id = null;
+    const cleanup = () => {
+      chrome.downloads.onCreated.removeListener(onCreated);
+      chrome.downloads.onChanged.removeListener(onChanged);
+      clearTimeout(timer);
+    };
+    const finish = async state => {
+      cleanup();
+      const [item] = id === null ? [] : await chrome.downloads.search({ id });
+      resolve({ state: state || item?.state || 'not_started', path: item?.filename || '', error: item?.error || '', danger: item?.danger || '' });
+    };
+    const onCreated = item => {
+      if (id === null && (item.url || '').startsWith('blob:' + origin)) id = item.id;
+    };
+    const onChanged = delta => {
+      if (delta.id !== id || !delta.state) return;
+      if (delta.state.current === 'complete' || delta.state.current === 'interrupted') finish(delta.state.current);
+    };
+    const timer = setTimeout(() => finish(), ms);
+    chrome.downloads.onCreated.addListener(onCreated);
+    chrome.downloads.onChanged.addListener(onChanged);
+    cancel = () => { cleanup(); resolve({ state: 'cancelled' }); };
+  });
+  return { promise, cancel: () => cancel() };
+}
+
+function saveBase64File(base64, filename, type) {
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    return true;
+  } catch (err) {
+    return false;
+  }
 }

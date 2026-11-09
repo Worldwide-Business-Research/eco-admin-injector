@@ -1110,10 +1110,12 @@ async function downloadBlockImages() {
     if (outcome.state === 'complete') {
       setImgStatus(`Saved ${outcome.path || filename} — ${counts}.`, failed.length ? 'warning' : 'success');
     } else {
-      const msg = outcome.state === 'pending'
-        ? `Zipped ${counts}. Chrome is still saving it — check the downloads icon, or `
-        : `Zipped ${counts}, but the download failed (${outcome.error || 'unknown error'}). `;
-      setImgStatus(msg, outcome.state === 'pending' ? 'warning' : 'error');
+      const pending = outcome.state === 'pending' || outcome.state === 'in_progress';
+      const detail = [outcome.state, outcome.error, outcome.danger && outcome.danger !== 'safe' ? `danger: ${outcome.danger}` : ''].filter(Boolean).join(', ');
+      const msg = pending
+        ? `Zipped ${counts}. Chrome hasn't finished saving it after 15s (${detail}). Check chrome://downloads, or `
+        : `Zipped ${counts}, but the download failed (${detail || 'no reason given'}). `;
+      setImgStatus(msg, pending ? 'warning' : 'error');
       addSaveLink(blob, filename);
     }
   } catch (err) {
@@ -1246,7 +1248,7 @@ async function downloadBlob(blob, filename) {
       chrome.downloads.onChanged.removeListener(listener);
       clearTimeout(timer);
       const [item] = await chrome.downloads.search({ id });
-      resolve({ state: state || item?.state || 'pending', path: item?.filename || '', error: item?.error || '' });
+      resolve({ state: state || item?.state || 'pending', path: item?.filename || '', error: item?.error || '', danger: item?.danger || '' });
     };
     const listener = delta => {
       if (delta.id !== id || !delta.state) return;

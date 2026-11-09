@@ -35,7 +35,20 @@ Paste a full HTML file and automatically split it into separate page_content blo
 
 ---
 
+## Download a block's images
+
+1. In **Download block images**, pick a section, then a block (the list comes from the live editor; click **Refresh** after changes)
+2. Click **Download images as ZIP**. It collects every image the block uses (`<img src>` / `data-src`, `srcset`, `video poster`, SVG `<image>`, and `url(...)` in `style` attributes and `<style>` tags) and zips them
+3. Keep the popup open until it says the ZIP is ready, then click **Save block-images-YYYY-MM-DD.zip** at the bottom-right of the ECO Admin page and choose where to save it. Images that can't be fetched are listed in `failed.txt` inside the ZIP
+
+---
+
 ## Changelog
+
+### 2026-11-09
+- Added a **Download block images** panel (works in both the classic and the new v2 page editor): choose a section and block, and every image it references (jpg, png, svg, webp, gif, avif) is downloaded as a ZIP. Uses a bundled copy of JSZip 3.10.1 (`jszip.min.js`).
+- Added `<all_urls>` to `host_permissions` so the popup can fetch images from any CDN. Chrome will show a broader permission warning after the reload.
+- The ZIP is saved through a Save button on the ECO Admin page and the system save dialog, not Chrome's downloader, so it still works when Chrome downloads are stuck.
 
 ### 2026-09-25
 - Added an **Enable existing** button to bulk re-enable disabled blocks (mirrors the existing Disable button).

@@ -292,6 +292,30 @@ exportBtn.addEventListener('click', async () => {
   setDisableStatus(`Exported ${totalBlocks} block${totalBlocks !== 1 ? 's' : ''} to HTML.`, 'success');
 });
 
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'svg', 'webp', 'gif', 'avif', 'bmp', 'ico'];
+const FONT_EXTS = ['woff', 'woff2', 'ttf', 'otf', 'eot'];
+const MIME_EXTS = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/svg+xml': 'svg', 'image/webp': 'webp',
+  'image/gif': 'gif', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico', 'image/vnd.microsoft.icon': 'ico'
+};
+
+const imgSectionSelect = document.getElementById('imgSectionSelect');
+const imgBlockSelect = document.getElementById('imgBlockSelect');
+const imgRefreshBtn = document.getElementById('imgRefreshBtn');
+const imgZipBtn = document.getElementById('imgZipBtn');
+const imgStatusBar = document.getElementById('imgStatusBar');
+const imgProgressWrap = document.getElementById('imgProgressWrap');
+const imgProgressBar = document.getElementById('imgProgressBar');
+
+let imgViews = [];
+let imgLoadToken = 0;
+let imgZipRunning = false;
+
+imgSectionSelect.innerHTML = SECTIONS.map(s => `<option value="${s}">${s}</option>`).join('');
+imgSectionSelect.addEventListener('change', loadImageBlocks);
+imgRefreshBtn.addEventListener('click', () => { if (!imgZipRunning) loadImageBlocks(); });
+imgZipBtn.addEventListener('click', downloadBlockImages);
+
 function exportBlocksFromSections(sectionNames) {
   function getViews(li) {
     for (const el of [...li.querySelectorAll('*')]) {
@@ -517,7 +541,8 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const url = tabs[0]?.url || '';
   if (url.includes('ecoadmin.wbresearch.com')) {
     mainContent.style.display = 'block';
-    pageStatus.textContent = 'ECO Admin ✓';
+    pageStatus.textContent = `ECO Admin ✓ · v${chrome.runtime.getManifest().version}`;
+    loadImageBlocks();
   } else {
     notCms.style.display = 'block';
     pageStatus.textContent = 'wrong page';
@@ -932,5 +957,342 @@ async function injectBlock(name, html, section) {
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+}
+function setImgStatus(msg, type) {
+  imgStatusBar.textContent = msg;
+  imgStatusBar.className = 'status-bar ' + type;
+}
+
+function setImgControlsDisabled(disabled) {
+  imgSectionSelect.disabled = disabled;
+  imgBlockSelect.disabled = disabled || !imgViews.length;
+  imgZipBtn.disabled = disabled || !imgViews.length;
+}
+
+async function loadImageBlocks() {
+  const token = ++imgLoadToken;
+  const section = imgSectionSelect.value;
+  imgViews = [];
+  imgBlockSelect.innerHTML = '<option>Loading...</option>';
+  setImgControlsDisabled(false);
+
+  let views = [];
+  let error = '';
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN',
+      func: getSectionBlocks,
+      args: [section]
+    });
+    const outcome = result[0]?.result;
+    if (outcome?.error) error = outcome.error;
+    else views = outcome?.views || [];
+  } catch (err) {
+    error = err.message;
+  }
+  if (token !== imgLoadToken) return;
+
+  imgViews = views;
+  if (error) {
+    imgBlockSelect.innerHTML = '<option>Could not read blocks</option>';
+    setImgStatus(error, 'error');
+  } else {
+    imgBlockSelect.innerHTML = imgViews.length
+      ? imgViews.map((v, i) => `<option value="${i}">${i + 1}. ${escapeHtml(v.name || '(unnamed)')}${v.disabled ? ' [disabled]' : ''}</option>`).join('')
+      : '<option>No blocks in this section</option>';
+    if (imgStatusBar.classList.contains('error')) imgStatusBar.className = 'status-bar';
+  }
+  setImgControlsDisabled(false);
+}
+
+function getSectionBlocks(sectionName) {
+  const target = sectionName.toLowerCase();
+  const toBlock = v => ({ name: v.name || v.file || '', html: v.html || '', disabled: !!Number(v.disabled) });
+
+  const regionsEl = document.querySelector('.eco-regions');
+  if (regionsEl) {
+    let vm = regionsEl.__vue__;
+    for (let d = 0; d < 12 && vm && !Array.isArray(vm.$data?.regions); d++) vm = vm.$parent;
+    const regions = vm?.$data?.regions;
+    if (!Array.isArray(regions)) return { error: 'Found the Regions card but couldn\'t read its data.' };
+    const region = regions.find(r => String(r.path || '').toLowerCase() === target);
+    if (!region) return { error: `This page has no "${sectionName}" region. Regions: ${regions.map(r => r.path).join(', ')}` };
+    return { views: (region.views || []).map(toBlock) };
+  }
+  if (document.body.classList.contains('eco-v2')) return { error: 'Open the page\'s Regions tab, wait for it to load, then click Refresh.' };
+
+  const headings = [...document.querySelectorAll('div.panel-heading')];
+  const ownText = h => [...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('').toLowerCase();
+  const heading = headings.find(h => ownText(h) === target) || headings.find(h => h.textContent.trim().toLowerCase().startsWith(target));
+  if (!heading) return { error: `Couldn't find the "${sectionName}" section on this page.` };
+
+  const vueOf = el => el.__vue__ || el[Object.keys(el).find(k => k.startsWith('__vue'))];
+  const viewsUp = (vm, needItems) => {
+    for (let d = 0; d < 12 && vm; d++, vm = vm.$parent) {
+      const views = vm.$data?.views;
+      if (Array.isArray(views) && (!needItems || views.length)) return views;
+    }
+    return null;
+  };
+
+  let views = null;
+  const box = heading.closest('li.list-unstyled, li, .panel, .card') || heading.parentElement;
+  for (const el of [box, ...box.querySelectorAll('*')]) {
+    const vm = vueOf(el);
+    if (vm) { views = viewsUp(vm, true); if (views) break; }
+  }
+  if (!views) {
+    for (let el = heading; el && el !== document.body; el = el.parentElement) {
+      const vm = vueOf(el);
+      if (vm) { views = viewsUp(vm, false); if (views) break; }
+    }
+  }
+  if (!views) return { error: `Found "${sectionName}" but couldn't read its block list.` };
+  return { views: views.map(toBlock) };
+}
+
+async function downloadBlockImages() {
+  if (imgZipRunning) return;
+  const view = imgViews[imgBlockSelect.value];
+  if (!view) { setImgStatus('Select a block first.', 'warning'); return; }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const urls = extractImageUrls(view.html, tab.url);
+  if (!urls.length) { setImgStatus(`No images found in "${view.name || '(unnamed)'}".`, 'warning'); return; }
+
+  imgZipRunning = true;
+  setImgControlsDisabled(true);
+  imgProgressWrap.style.display = 'block';
+  imgProgressBar.style.width = '0%';
+  setImgStatus(`Fetching ${urls.length} image${urls.length !== 1 ? 's' : ''}...`, 'info');
+
+  try {
+    let fetched = 0;
+    const results = await mapWithLimit(urls, 6, async url => {
+      const res = await fetchImage(url);
+      fetched++;
+      imgProgressBar.style.width = ((fetched / urls.length) * 100) + '%';
+      return res;
+    });
+
+    const zip = new JSZip();
+    const usedNames = new Set();
+    const failed = [];
+    let added = 0;
+    results.forEach((r, i) => {
+      if (r.error) { failed.push(`${r.url}  —  ${r.error}`); return; }
+      zip.file(uniqueFileName(r.name || `image-${i + 1}.${r.ext}`, usedNames), r.blob);
+      added++;
+    });
+
+    if (!added) {
+      setImgStatus(`Could not fetch any of the ${urls.length} images. ${failed[0] || ''}`, 'error');
+      return;
+    }
+    if (failed.length) zip.file('failed.txt', failed.join('\n') + '\n');
+
+    setImgStatus('Building ZIP...', 'info');
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const filename = `block-images-${new Date().toISOString().split('T')[0]}.zip`;
+    const counts = `${added} image${added !== 1 ? 's' : ''}${failed.length ? `, ${failed.length} failed (see failed.txt)` : ''}`;
+    const shown = await offerZipOnPage(blob, filename);
+    if (shown) setImgStatus(`ZIP ready — ${counts}. Click "Save ${filename}" at the bottom-right of the ECO Admin page.`, failed.length ? 'warning' : 'success');
+    else setImgStatus('Zipped the images, but couldn\'t show the Save button on the page. Reload the page and try again.', 'error');
+  } catch (err) {
+    setImgStatus(`ZIP failed: ${err.message}`, 'error');
+  } finally {
+    imgZipRunning = false;
+    setImgControlsDisabled(false);
+  }
+}
+
+function extractImageUrls(html, baseUrl) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const raw = [];
+
+  doc.querySelectorAll('img').forEach(el => {
+    raw.push(el.getAttribute('src'), el.getAttribute('data-src'));
+  });
+  doc.querySelectorAll('[srcset], [data-srcset]').forEach(el => {
+    raw.push(...parseSrcset(el.getAttribute('srcset') || ''), ...parseSrcset(el.getAttribute('data-srcset') || ''));
+  });
+  doc.querySelectorAll('video[poster]').forEach(el => raw.push(el.getAttribute('poster')));
+  doc.querySelectorAll('image').forEach(el => raw.push(el.getAttribute('href') || el.getAttribute('xlink:href')));
+  doc.querySelectorAll('[style]').forEach(el => raw.push(...parseCssUrls(el.getAttribute('style'))));
+  doc.querySelectorAll('style').forEach(el => raw.push(...parseCssUrls(el.textContent)));
+
+  const seen = new Set();
+  const urls = [];
+  raw.forEach(u => {
+    if (!u || !u.trim() || u.trim().startsWith('#')) return;
+    let resolved;
+    try { resolved = new URL(u.trim(), baseUrl); } catch { return; }
+    if (!['http:', 'https:', 'data:'].includes(resolved.protocol)) return;
+    if (resolved.protocol !== 'data:' && FONT_EXTS.includes(urlExtension(resolved.href))) return;
+    if (seen.has(resolved.href)) return;
+    seen.add(resolved.href);
+    urls.push(resolved.href);
+  });
+  return urls;
+}
+
+function parseSrcset(value) {
+  const urls = [];
+  let rest = value;
+  while (rest) {
+    rest = rest.replace(/^[\s,]+/, '');
+    const m = rest.match(/^\S+/);
+    if (!m) break;
+    let url = m[0];
+    rest = rest.slice(url.length);
+    if (url.endsWith(',')) {
+      url = url.replace(/,+$/, '');
+    } else {
+      const i = rest.indexOf(',');
+      rest = i === -1 ? '' : rest.slice(i + 1);
+    }
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+function parseCssUrls(css) {
+  return [...(css || '').matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)].map(m => m[2]);
+}
+
+function urlExtension(url) {
+  try {
+    const m = new URL(url).pathname.match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchImage(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) return { url, error: `HTTP ${res.status}` };
+    const blob = await res.blob();
+    const mime = (blob.type || '').split(';')[0].trim().toLowerCase();
+    const isData = url.startsWith('data:');
+    const urlExt = isData ? '' : urlExtension(url);
+    if (!IMAGE_EXTS.includes(urlExt) && !mime.startsWith('image/')) return { url, error: `Not an image (${mime || 'unknown type'})` };
+    const ext = IMAGE_EXTS.includes(urlExt) ? urlExt : (MIME_EXTS[mime] || mime.replace('image/', '').replace(/[^a-z0-9]/g, '') || 'img');
+    return { url, blob, ext, name: isData ? '' : imageFileName(url, urlExt, ext) };
+  } catch (err) {
+    return { url, error: err.name === 'TimeoutError' ? 'Timed out' : err.message };
+  }
+}
+
+function imageFileName(url, urlExt, ext) {
+  let last = new URL(url).pathname.split('/').pop() || '';
+  try { last = decodeURIComponent(last); } catch {}
+  let stem = urlExt ? last.slice(0, -(urlExt.length + 1)) : last;
+  stem = stem.replace(/[^\w.\-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').substring(0, 80);
+  return stem ? `${stem}.${ext}` : '';
+}
+
+function uniqueFileName(name, used) {
+  const dot = name.lastIndexOf('.');
+  const stem = name.slice(0, dot);
+  const ext = name.slice(dot);
+  let candidate = name;
+  for (let n = 2; used.has(candidate.toLowerCase()); n++) candidate = `${stem}-${n}${ext}`;
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+async function mapWithLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function offerZipOnPage(blob, filename) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const base64 = await blobToBase64(blob);
+  const result = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: 'MAIN',
+    func: showZipSaveButton,
+    args: [base64, filename]
+  });
+  return !!result[0]?.result;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function showZipSaveButton(base64, filename) {
+  try {
+    document.getElementById('eco-zip-save')?.remove();
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/zip' });
+
+    const wrap = document.createElement('div');
+    wrap.id = 'eco-zip-save';
+    wrap.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483647;display:flex;align-items:center;gap:10px;padding:10px 12px;background:#1a6e9f;color:#fff;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.3);font:500 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+    const label = document.createElement('span');
+    label.textContent = 'Image ZIP ready';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = `Save ${filename}`;
+    save.style.cssText = 'border:0;border-radius:6px;padding:6px 12px;background:#fff;color:#1a6e9f;font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer;';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.style.cssText = 'border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer;padding:0 2px;';
+    close.addEventListener('click', () => wrap.remove());
+
+    save.addEventListener('click', async () => {
+      try {
+        if (window.showSaveFilePicker) {
+          const handle = await window.showSaveFilePicker({ suggestedName: filename, types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }] });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 120000);
+        }
+        label.textContent = 'Saved ✓';
+        save.remove();
+        setTimeout(() => wrap.remove(), 3000);
+      } catch (err) {
+        if (err.name !== 'AbortError') label.textContent = `Save failed: ${err.message}`;
+      }
+    });
+
+    wrap.append(label, save, close);
+    document.body.appendChild(wrap);
+    return true;
+  } catch (err) {
+    return false;
   }
 }

@@ -1096,7 +1096,7 @@ async function downloadBlockImages() {
 
     setImgStatus('Building ZIP...', 'info');
     const blob = await zip.generateAsync({ type: 'blob' });
-    downloadBlob(blob, `block-images-${new Date().toISOString().split('T')[0]}.zip`);
+    await downloadBlob(blob, `block-images-${new Date().toISOString().split('T')[0]}.zip`);
 
     if (failed.length) setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''}. ${failed.length} failed — see failed.txt in the ZIP.`, 'warning');
     else setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''} from "${view.name || '(unnamed)'}".`, 'success');
@@ -1218,13 +1218,11 @@ async function mapWithLimit(items, limit, fn) {
   return results;
 }
 
-function downloadBlob(blob, filename) {
+async function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  try {
+    await chrome.downloads.download({ url, filename, saveAs: false });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
 }

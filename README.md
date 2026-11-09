@@ -48,6 +48,7 @@ Paste a full HTML file and automatically split it into separate page_content blo
 ### 2026-11-09
 - Added a **Download block images** panel: choose a section and block, and every image it references (jpg, png, svg, webp, gif, avif) is downloaded as a ZIP. Uses a bundled copy of JSZip 3.10.1 (`jszip.min.js`).
 - Added `<all_urls>` to `host_permissions` so the popup can fetch images from any CDN. Chrome will show a broader permission warning after the reload.
+- Added the `downloads` permission so the ZIP saves reliably after the images finish fetching.
 
 ### 2026-09-25
 - Added an **Enable existing** button to bulk re-enable disabled blocks (mirrors the existing Disable button).

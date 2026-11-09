@@ -978,25 +978,66 @@ async function loadImageBlocks() {
   setImgControlsDisabled(false);
 
   let views = [];
+  let error = '';
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: 'MAIN',
-      func: exportBlocksFromSections,
-      args: [[section]]
+      func: getSectionBlocks,
+      args: [section]
     });
-    views = result[0]?.result?.[section] || [];
+    const outcome = result[0]?.result;
+    if (outcome?.error) error = outcome.error;
+    else views = outcome?.views || [];
   } catch (err) {
-    if (token === imgLoadToken) setImgStatus(`Could not read blocks: ${err.message}`, 'error');
+    error = err.message;
   }
   if (token !== imgLoadToken) return;
 
   imgViews = views;
-  imgBlockSelect.innerHTML = imgViews.length
-    ? imgViews.map((v, i) => `<option value="${i}">${i + 1}. ${escapeHtml(v.name || '(unnamed)')}${v.disabled ? ' [disabled]' : ''}</option>`).join('')
-    : '<option>No blocks in this section</option>';
+  if (error) {
+    imgBlockSelect.innerHTML = '<option>Could not read blocks</option>';
+    setImgStatus(error, 'error');
+  } else {
+    imgBlockSelect.innerHTML = imgViews.length
+      ? imgViews.map((v, i) => `<option value="${i}">${i + 1}. ${escapeHtml(v.name || '(unnamed)')}${v.disabled ? ' [disabled]' : ''}</option>`).join('')
+      : '<option>No blocks in this section</option>';
+    if (imgStatusBar.classList.contains('error')) imgStatusBar.className = 'status-bar';
+  }
   setImgControlsDisabled(false);
+}
+
+function getSectionBlocks(sectionName) {
+  const target = sectionName.toLowerCase();
+  const headings = [...document.querySelectorAll('div.panel-heading')];
+  const ownText = h => [...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('').toLowerCase();
+  const heading = headings.find(h => ownText(h) === target) || headings.find(h => h.textContent.trim().toLowerCase().startsWith(target));
+  if (!heading) return { error: `Couldn't find the "${sectionName}" section on this page.` };
+
+  const vueOf = el => el.__vue__ || el[Object.keys(el).find(k => k.startsWith('__vue'))];
+  const viewsUp = (vm, needItems) => {
+    for (let d = 0; d < 12 && vm; d++, vm = vm.$parent) {
+      const views = vm.$data?.views;
+      if (Array.isArray(views) && (!needItems || views.length)) return views;
+    }
+    return null;
+  };
+
+  let views = null;
+  const box = heading.closest('li.list-unstyled, li, .panel, .card') || heading.parentElement;
+  for (const el of [box, ...box.querySelectorAll('*')]) {
+    const vm = vueOf(el);
+    if (vm) { views = viewsUp(vm, true); if (views) break; }
+  }
+  if (!views) {
+    for (let el = heading; el && el !== document.body; el = el.parentElement) {
+      const vm = vueOf(el);
+      if (vm) { views = viewsUp(vm, false); if (views) break; }
+    }
+  }
+  if (!views) return { error: `Found "${sectionName}" but couldn't read its block list.` };
+  return { views: views.map(v => ({ name: v.name || '', html: v.html || '', disabled: !!v.disabled })) };
 }
 
 async function downloadBlockImages() {

@@ -1098,23 +1098,9 @@ async function downloadBlockImages() {
     const blob = await zip.generateAsync({ type: 'blob' });
     const filename = `block-images-${new Date().toISOString().split('T')[0]}.zip`;
     const counts = `${added} image${added !== 1 ? 's' : ''}${failed.length ? `, ${failed.length} failed (see failed.txt)` : ''}`;
-    setImgStatus(`Saving ${filename}...`, 'info');
-
-    let outcome;
-    try {
-      outcome = await downloadBlob(blob, filename);
-    } catch (err) {
-      outcome = { state: 'error', error: err.message };
-    }
-
-    if (outcome.state === 'complete') {
-      setImgStatus(`Saved ${outcome.path || filename} — ${counts}.`, failed.length ? 'warning' : 'success');
-    } else if (outcome.state === 'unknown') {
-      setImgStatus(`Sent ${filename} to Chrome's downloads — ${counts}.`, failed.length ? 'warning' : 'success');
-    } else {
-      const detail = [outcome.state, outcome.error, outcome.danger && outcome.danger !== 'safe' ? `danger: ${outcome.danger}` : ''].filter(Boolean).join(', ');
-      setImgStatus(`Zipped ${counts}, but Chrome didn't save it (${detail}). Open chrome://downloads to see why.`, 'error');
-    }
+    const shown = await offerZipOnPage(blob, filename);
+    if (shown) setImgStatus(`ZIP ready — ${counts}. Click "Save ${filename}" at the bottom-right of the ECO Admin page.`, failed.length ? 'warning' : 'success');
+    else setImgStatus('Zipped the images, but couldn\'t show the Save button on the page. Reload the page and try again.', 'error');
   } catch (err) {
     setImgStatus(`ZIP failed: ${err.message}`, 'error');
   } finally {
@@ -1233,18 +1219,16 @@ async function mapWithLimit(items, limit, fn) {
   return results;
 }
 
-async function downloadBlob(blob, filename) {
+async function offerZipOnPage(blob, filename) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const base64 = await blobToBase64(blob);
-  const watch = watchPageDownload(new URL(tab.url).origin, 20000);
   const result = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
-    func: saveBase64File,
-    args: [base64, filename, 'application/zip']
+    func: showZipSaveButton,
+    args: [base64, filename]
   });
-  if (!result[0]?.result) { watch.cancel(); return { state: 'error', error: 'the ECO Admin tab could not start the download' }; }
-  return watch.promise;
+  return !!result[0]?.result;
 }
 
 function blobToBase64(blob) {
@@ -1256,50 +1240,57 @@ function blobToBase64(blob) {
   });
 }
 
-function watchPageDownload(origin, ms) {
-  let cancel = () => {};
-  const promise = new Promise(resolve => {
-    if (!chrome.downloads) { resolve({ state: 'unknown' }); return; }
-    let id = null;
-    const cleanup = () => {
-      chrome.downloads.onCreated.removeListener(onCreated);
-      chrome.downloads.onChanged.removeListener(onChanged);
-      clearTimeout(timer);
-    };
-    const finish = async state => {
-      cleanup();
-      const [item] = id === null ? [] : await chrome.downloads.search({ id });
-      resolve({ state: state || item?.state || 'not_started', path: item?.filename || '', error: item?.error || '', danger: item?.danger || '' });
-    };
-    const onCreated = item => {
-      if (id === null && (item.url || '').startsWith('blob:' + origin)) id = item.id;
-    };
-    const onChanged = delta => {
-      if (delta.id !== id || !delta.state) return;
-      if (delta.state.current === 'complete' || delta.state.current === 'interrupted') finish(delta.state.current);
-    };
-    const timer = setTimeout(() => finish(), ms);
-    chrome.downloads.onCreated.addListener(onCreated);
-    chrome.downloads.onChanged.addListener(onChanged);
-    cancel = () => { cleanup(); resolve({ state: 'cancelled' }); };
-  });
-  return { promise, cancel: () => cancel() };
-}
-
-function saveBase64File(base64, filename, type) {
+function showZipSaveButton(base64, filename) {
   try {
+    document.getElementById('eco-zip-save')?.remove();
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([bytes], { type }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    const blob = new Blob([bytes], { type: 'application/zip' });
+
+    const wrap = document.createElement('div');
+    wrap.id = 'eco-zip-save';
+    wrap.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483647;display:flex;align-items:center;gap:10px;padding:10px 12px;background:#1a6e9f;color:#fff;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.3);font:500 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+    const label = document.createElement('span');
+    label.textContent = 'Image ZIP ready';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = `Save ${filename}`;
+    save.style.cssText = 'border:0;border-radius:6px;padding:6px 12px;background:#fff;color:#1a6e9f;font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer;';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.style.cssText = 'border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer;padding:0 2px;';
+    close.addEventListener('click', () => wrap.remove());
+
+    save.addEventListener('click', async () => {
+      try {
+        if (window.showSaveFilePicker) {
+          const handle = await window.showSaveFilePicker({ suggestedName: filename, types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }] });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 120000);
+        }
+        label.textContent = 'Saved ✓';
+        save.remove();
+        setTimeout(() => wrap.remove(), 3000);
+      } catch (err) {
+        if (err.name !== 'AbortError') label.textContent = `Save failed: ${err.message}`;
+      }
+    });
+
+    wrap.append(label, save, close);
+    document.body.appendChild(wrap);
     return true;
   } catch (err) {
     return false;

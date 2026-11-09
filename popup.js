@@ -541,7 +541,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const url = tabs[0]?.url || '';
   if (url.includes('ecoadmin.wbresearch.com')) {
     mainContent.style.display = 'block';
-    pageStatus.textContent = 'ECO Admin ✓';
+    pageStatus.textContent = `ECO Admin ✓ · v${chrome.runtime.getManifest().version}`;
     loadImageBlocks();
   } else {
     notCms.style.display = 'block';
@@ -1096,10 +1096,26 @@ async function downloadBlockImages() {
 
     setImgStatus('Building ZIP...', 'info');
     const blob = await zip.generateAsync({ type: 'blob' });
-    await downloadBlob(blob, `block-images-${new Date().toISOString().split('T')[0]}.zip`);
+    const filename = `block-images-${new Date().toISOString().split('T')[0]}.zip`;
+    const counts = `${added} image${added !== 1 ? 's' : ''}${failed.length ? `, ${failed.length} failed (see failed.txt)` : ''}`;
+    setImgStatus(`Saving ${filename}...`, 'info');
 
-    if (failed.length) setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''}. ${failed.length} failed — see failed.txt in the ZIP.`, 'warning');
-    else setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''} from "${view.name || '(unnamed)'}".`, 'success');
+    let outcome;
+    try {
+      outcome = await downloadBlob(blob, filename);
+    } catch (err) {
+      outcome = { state: 'error', error: err.message };
+    }
+
+    if (outcome.state === 'complete') {
+      setImgStatus(`Saved ${outcome.path || filename} — ${counts}.`, failed.length ? 'warning' : 'success');
+    } else {
+      const msg = outcome.state === 'pending'
+        ? `Zipped ${counts}. Chrome is still saving it — check the downloads icon, or `
+        : `Zipped ${counts}, but the download failed (${outcome.error || 'unknown error'}). `;
+      setImgStatus(msg, outcome.state === 'pending' ? 'warning' : 'error');
+      addSaveLink(blob, filename);
+    }
   } catch (err) {
     setImgStatus(`ZIP failed: ${err.message}`, 'error');
   } finally {
@@ -1219,10 +1235,37 @@ async function mapWithLimit(items, limit, fn) {
 }
 
 async function downloadBlob(blob, filename) {
+  if (!chrome.downloads) return { state: 'error', error: 'the extension has no downloads permission yet. Reload it in chrome://extensions' };
   const url = URL.createObjectURL(blob);
-  try {
-    await chrome.downloads.download({ url, filename, saveAs: false });
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  }
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  const id = await chrome.downloads.download({ url, filename, saveAs: false, conflictAction: 'uniquify' });
+  if (id === undefined) return { state: 'error', error: chrome.runtime.lastError?.message || 'Chrome refused the download' };
+
+  return new Promise(resolve => {
+    const finish = async state => {
+      chrome.downloads.onChanged.removeListener(listener);
+      clearTimeout(timer);
+      const [item] = await chrome.downloads.search({ id });
+      resolve({ state: state || item?.state || 'pending', path: item?.filename || '', error: item?.error || '' });
+    };
+    const listener = delta => {
+      if (delta.id !== id || !delta.state) return;
+      if (delta.state.current === 'complete' || delta.state.current === 'interrupted') finish(delta.state.current);
+    };
+    const timer = setTimeout(() => finish(), 15000);
+    chrome.downloads.onChanged.addListener(listener);
+    chrome.downloads.search({ id }).then(([item]) => {
+      if (item && item.state !== 'in_progress') finish(item.state);
+    });
+  });
+}
+
+function addSaveLink(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.textContent = 'Save ZIP';
+  a.style.fontWeight = '600';
+  a.style.color = 'inherit';
+  imgStatusBar.appendChild(a);
 }

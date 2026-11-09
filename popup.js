@@ -292,6 +292,30 @@ exportBtn.addEventListener('click', async () => {
   setDisableStatus(`Exported ${totalBlocks} block${totalBlocks !== 1 ? 's' : ''} to HTML.`, 'success');
 });
 
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'svg', 'webp', 'gif', 'avif', 'bmp', 'ico'];
+const FONT_EXTS = ['woff', 'woff2', 'ttf', 'otf', 'eot'];
+const MIME_EXTS = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/svg+xml': 'svg', 'image/webp': 'webp',
+  'image/gif': 'gif', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico', 'image/vnd.microsoft.icon': 'ico'
+};
+
+const imgSectionSelect = document.getElementById('imgSectionSelect');
+const imgBlockSelect = document.getElementById('imgBlockSelect');
+const imgRefreshBtn = document.getElementById('imgRefreshBtn');
+const imgZipBtn = document.getElementById('imgZipBtn');
+const imgStatusBar = document.getElementById('imgStatusBar');
+const imgProgressWrap = document.getElementById('imgProgressWrap');
+const imgProgressBar = document.getElementById('imgProgressBar');
+
+let imgViews = [];
+let imgLoadToken = 0;
+let imgZipRunning = false;
+
+imgSectionSelect.innerHTML = SECTIONS.map(s => `<option value="${s}">${s}</option>`).join('');
+imgSectionSelect.addEventListener('change', loadImageBlocks);
+imgRefreshBtn.addEventListener('click', () => { if (!imgZipRunning) loadImageBlocks(); });
+imgZipBtn.addEventListener('click', downloadBlockImages);
+
 function exportBlocksFromSections(sectionNames) {
   function getViews(li) {
     for (const el of [...li.querySelectorAll('*')]) {
@@ -518,6 +542,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   if (url.includes('ecoadmin.wbresearch.com')) {
     mainContent.style.display = 'block';
     pageStatus.textContent = 'ECO Admin ✓';
+    loadImageBlocks();
   } else {
     notCms.style.display = 'block';
     pageStatus.textContent = 'wrong page';
@@ -933,4 +958,218 @@ async function injectBlock(name, html, section) {
   } catch (err) {
     return { success: false, error: err.message };
   }
+}
+function setImgStatus(msg, type) {
+  imgStatusBar.textContent = msg;
+  imgStatusBar.className = 'status-bar ' + type;
+}
+
+function setImgControlsDisabled(disabled) {
+  imgSectionSelect.disabled = disabled;
+  imgBlockSelect.disabled = disabled || !imgViews.length;
+  imgZipBtn.disabled = disabled || !imgViews.length;
+}
+
+async function loadImageBlocks() {
+  const token = ++imgLoadToken;
+  const section = imgSectionSelect.value;
+  imgViews = [];
+  imgBlockSelect.innerHTML = '<option>Loading...</option>';
+  setImgControlsDisabled(false);
+
+  let views = [];
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN',
+      func: exportBlocksFromSections,
+      args: [[section]]
+    });
+    views = result[0]?.result?.[section] || [];
+  } catch (err) {
+    if (token === imgLoadToken) setImgStatus(`Could not read blocks: ${err.message}`, 'error');
+  }
+  if (token !== imgLoadToken) return;
+
+  imgViews = views;
+  imgBlockSelect.innerHTML = imgViews.length
+    ? imgViews.map((v, i) => `<option value="${i}">${i + 1}. ${escapeHtml(v.name || '(unnamed)')}${v.disabled ? ' [disabled]' : ''}</option>`).join('')
+    : '<option>No blocks in this section</option>';
+  setImgControlsDisabled(false);
+}
+
+async function downloadBlockImages() {
+  if (imgZipRunning) return;
+  const view = imgViews[imgBlockSelect.value];
+  if (!view) { setImgStatus('Select a block first.', 'warning'); return; }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const urls = extractImageUrls(view.html, tab.url);
+  if (!urls.length) { setImgStatus(`No images found in "${view.name || '(unnamed)'}".`, 'warning'); return; }
+
+  imgZipRunning = true;
+  setImgControlsDisabled(true);
+  imgProgressWrap.style.display = 'block';
+  imgProgressBar.style.width = '0%';
+  setImgStatus(`Fetching ${urls.length} image${urls.length !== 1 ? 's' : ''}...`, 'info');
+
+  try {
+    let fetched = 0;
+    const results = await mapWithLimit(urls, 6, async url => {
+      const res = await fetchImage(url);
+      fetched++;
+      imgProgressBar.style.width = ((fetched / urls.length) * 100) + '%';
+      return res;
+    });
+
+    const zip = new JSZip();
+    const usedNames = new Set();
+    const failed = [];
+    let added = 0;
+    results.forEach((r, i) => {
+      if (r.error) { failed.push(`${r.url}  —  ${r.error}`); return; }
+      zip.file(uniqueFileName(r.name || `image-${i + 1}.${r.ext}`, usedNames), r.blob);
+      added++;
+    });
+
+    if (!added) {
+      setImgStatus(`Could not fetch any of the ${urls.length} images. ${failed[0] || ''}`, 'error');
+      return;
+    }
+    if (failed.length) zip.file('failed.txt', failed.join('\n') + '\n');
+
+    setImgStatus('Building ZIP...', 'info');
+    const blob = await zip.generateAsync({ type: 'blob' });
+    downloadBlob(blob, `block-images-${new Date().toISOString().split('T')[0]}.zip`);
+
+    if (failed.length) setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''}. ${failed.length} failed — see failed.txt in the ZIP.`, 'warning');
+    else setImgStatus(`Zipped ${added} image${added !== 1 ? 's' : ''} from "${view.name || '(unnamed)'}".`, 'success');
+  } catch (err) {
+    setImgStatus(`ZIP failed: ${err.message}`, 'error');
+  } finally {
+    imgZipRunning = false;
+    setImgControlsDisabled(false);
+  }
+}
+
+function extractImageUrls(html, baseUrl) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const raw = [];
+
+  doc.querySelectorAll('img').forEach(el => {
+    raw.push(el.getAttribute('src'), el.getAttribute('data-src'));
+  });
+  doc.querySelectorAll('[srcset], [data-srcset]').forEach(el => {
+    raw.push(...parseSrcset(el.getAttribute('srcset') || ''), ...parseSrcset(el.getAttribute('data-srcset') || ''));
+  });
+  doc.querySelectorAll('video[poster]').forEach(el => raw.push(el.getAttribute('poster')));
+  doc.querySelectorAll('image').forEach(el => raw.push(el.getAttribute('href') || el.getAttribute('xlink:href')));
+  doc.querySelectorAll('[style]').forEach(el => raw.push(...parseCssUrls(el.getAttribute('style'))));
+  doc.querySelectorAll('style').forEach(el => raw.push(...parseCssUrls(el.textContent)));
+
+  const seen = new Set();
+  const urls = [];
+  raw.forEach(u => {
+    if (!u || !u.trim() || u.trim().startsWith('#')) return;
+    let resolved;
+    try { resolved = new URL(u.trim(), baseUrl); } catch { return; }
+    if (!['http:', 'https:', 'data:'].includes(resolved.protocol)) return;
+    if (resolved.protocol !== 'data:' && FONT_EXTS.includes(urlExtension(resolved.href))) return;
+    if (seen.has(resolved.href)) return;
+    seen.add(resolved.href);
+    urls.push(resolved.href);
+  });
+  return urls;
+}
+
+function parseSrcset(value) {
+  const urls = [];
+  let rest = value;
+  while (rest) {
+    rest = rest.replace(/^[\s,]+/, '');
+    const m = rest.match(/^\S+/);
+    if (!m) break;
+    let url = m[0];
+    rest = rest.slice(url.length);
+    if (url.endsWith(',')) {
+      url = url.replace(/,+$/, '');
+    } else {
+      const i = rest.indexOf(',');
+      rest = i === -1 ? '' : rest.slice(i + 1);
+    }
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+function parseCssUrls(css) {
+  return [...(css || '').matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)].map(m => m[2]);
+}
+
+function urlExtension(url) {
+  try {
+    const m = new URL(url).pathname.match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchImage(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) return { url, error: `HTTP ${res.status}` };
+    const blob = await res.blob();
+    const mime = (blob.type || '').split(';')[0].trim().toLowerCase();
+    const isData = url.startsWith('data:');
+    const urlExt = isData ? '' : urlExtension(url);
+    if (!IMAGE_EXTS.includes(urlExt) && !mime.startsWith('image/')) return { url, error: `Not an image (${mime || 'unknown type'})` };
+    const ext = IMAGE_EXTS.includes(urlExt) ? urlExt : (MIME_EXTS[mime] || mime.replace('image/', '').replace(/[^a-z0-9]/g, '') || 'img');
+    return { url, blob, ext, name: isData ? '' : imageFileName(url, urlExt, ext) };
+  } catch (err) {
+    return { url, error: err.name === 'TimeoutError' ? 'Timed out' : err.message };
+  }
+}
+
+function imageFileName(url, urlExt, ext) {
+  let last = new URL(url).pathname.split('/').pop() || '';
+  try { last = decodeURIComponent(last); } catch {}
+  let stem = urlExt ? last.slice(0, -(urlExt.length + 1)) : last;
+  stem = stem.replace(/[^\w.\-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').substring(0, 80);
+  return stem ? `${stem}.${ext}` : '';
+}
+
+function uniqueFileName(name, used) {
+  const dot = name.lastIndexOf('.');
+  const stem = name.slice(0, dot);
+  const ext = name.slice(dot);
+  let candidate = name;
+  for (let n = 2; used.has(candidate.toLowerCase()); n++) candidate = `${stem}-${n}${ext}`;
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+async function mapWithLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
